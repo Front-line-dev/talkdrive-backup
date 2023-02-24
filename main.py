@@ -3,6 +3,7 @@ import requests
 import json
 import time
 import shutil
+import threading
 
 BACKUP_PATH = './backups'
 
@@ -71,11 +72,29 @@ while(True):
         json.dump(file_list_json, file)
 
     ## 사진 저장
-    for photo_item in file_list_json['items']:
-        photo = request_photo(photo_item['url'])
-        print('download', photo_item['id'])
-        with open(f"{download_path}/{photo_item['url'].split('/')[-1]}", 'wb') as f:
-            f.write(photo)
+    PHOTO_COUNT = 100
+    THREADS_COUNT = 5
+    def worker(photo_item_list):
+        for photo_item in photo_item_list:
+            photo = request_photo(photo_item['url'])
+            print('download', photo_item['id'])
+            with open(f"{download_path}/{photo_item['url'].split('/')[-1]}", 'wb') as f:
+                f.write(photo)
+
+    photo_item_list_list = [list() for _ in range(THREADS_COUNT)]
+
+    for index, photo_item in enumerate(file_list_json['items']):
+        photo_item_list_list[index // (PHOTO_COUNT // THREADS_COUNT)].append(photo_item)
+
+    threads = []
+
+    for i in range(THREADS_COUNT):
+        thread = threading.Thread(target=worker, args=(photo_item_list_list[i],))
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
 
     ## 압축
     shutil.make_archive(f'{download_path}_photo', 'zip', download_path)

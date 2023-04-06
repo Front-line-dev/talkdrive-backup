@@ -12,12 +12,19 @@ if not os.path.exists(BACKUP_PATH):
 
 # 쿠키 정보 읽기
 cookies = {}
+
+def is_kakao_cookie(line):
+    if line.startswith('drive.kakao.com') or line.startswith('.kakao.com'):
+        return True
+    else:
+        return False
+
 with open('drive.kakao.com_cookies.txt', 'r', encoding='utf-8') as file:
     lines = file.readlines()
-    cookie_lines = [line for line in lines if line.startswith('drive.kakao.com')]
+    cookie_lines = [line for line in lines if is_kakao_cookie(line)]
     for cookie_line in cookie_lines:
         name, value = cookie_line.split('\t')[5:7]
-        cookies[name.replace(' ', '')] = value
+        cookies[name.replace(' ', '')] = value.replace('\n', '')
 
 # 요청 및 다운로드
 def request_list(url):

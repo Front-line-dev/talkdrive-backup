@@ -6,6 +6,10 @@ import shutil
 import threading
 
 BACKUP_PATH = './backups'
+REQ_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+    'Accept': 'application/json+javascript'
+}
 
 if not os.path.exists(BACKUP_PATH):
     os.makedirs(BACKUP_PATH)
@@ -29,7 +33,7 @@ with open('drive.kakao.com_cookies.txt', 'r', encoding='utf-8') as file:
 # 요청 및 다운로드
 def request_list(url):
     try:
-        response = requests.get(url, cookies=cookies)
+        response = requests.get(url, cookies=cookies, headers=REQ_HEADERS)
         response_content = response.content.decode('utf-8')
         response_json = json.loads(response_content)
         return response_json
@@ -39,7 +43,7 @@ def request_list(url):
 
 def request_photo(url):
     try:
-        response = requests.get(f'{url}?attach', cookies=cookies)
+        response = requests.get(f'{url}?attach', cookies=cookies, headers=REQ_HEADERS)
         return response.content
     except Exception as e:
         print('error on request get photo', url)
@@ -53,7 +57,7 @@ def request_delete(file_list_json):
 
     try:
         url = 'https://drawer-api.kakao.com/mediaFile/delete'
-        response = requests.post(url, data=json.dumps(data), headers={'Content-Type': 'application/json'}, cookies=cookies)
+        response = requests.post(url, data=json.dumps(data), headers={'Content-Type': 'application/json', 'Accept': 'application/json+javascript'}, cookies=cookies)
         # 204 성공
         return response
     except Exception as e:
@@ -63,6 +67,9 @@ def request_delete(file_list_json):
 
 while(True):
     ## 파일 리스트 요청
+    # https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount=100&joined=true&direction=DESC
+    # https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount=100&joined=true&direction=ASC
+    # https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount=100&joined=true&direction=ASC
     file_list_json = request_list('https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount=100&joined=true&direction=ASC')
 
     ## 파일이 없는지(끝났는지) 검사

@@ -12,13 +12,17 @@ from urllib3.util.retry import Retry
 BACKUP_PATH = './backups'
 COOKIE_FILE = 'talkcloud.kakao.com_cookies.txt'
 HISTORY_FILE = os.path.join(BACKUP_PATH, 'download_history.csv')
+CURSOR_FILE = os.path.join(BACKUP_PATH, 'download_cursor.txt')
 FETCH_COUNT = 100
 THREADS_COUNT = 5
 MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5GB
+MAX_COUNT = None  # 개수 제한 (None이면 제한 없음)
 MAX_RETRIES = 3
-TIMEOUT = (10, 60)  # (연결 타임아웃, 읽기 타임아웃) 초
+CONNECT_TIMEOUT = 3  # 연결 타임아웃 (초)
+READ_TIMEOUT_BASE = 3  # 읽기 타임아웃 기본값 (초)
+READ_TIMEOUT_PER_MB = 2  # MB당 추가 타임아웃 (초)
 
-CSV_FIELDS = ['id', 'chatId', 'date', 'filename', 'size', 'contentType', 'downloadedAt']
+CSV_FIELDS = ['id', 'chatId', 'date', 'filename', 'size', 'contentType', 'status', 'downloadedAt']
 
 REQ_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
@@ -39,6 +43,14 @@ else:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
 print(f"다운로드 이력: {len(downloaded_ids)}개 로드됨")
+
+# 저장된 커서 로드 (이전 실행 위치에서 재개)
+saved_cursor = None
+if os.path.exists(CURSOR_FILE):
+    with open(CURSOR_FILE, 'r', encoding='utf-8') as f:
+        saved_cursor = f.read().strip() or None
+    if saved_cursor:
+        print(f"이전 커서에서 재개: {saved_cursor}")
 
 # 쿠키 읽기
 cookies = {}
@@ -85,7 +97,7 @@ def request_list(cursor=None):
     url = f'https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount={FETCH_COUNT}&joined=true&direction=ASC'
     if cursor:
         url += f'&cursor={cursor}'
-    response = session.get(url, timeout=TIMEOUT)
+    response = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT_BASE))
     response.raise_for_status()
     return response.json()
 
@@ -111,7 +123,8 @@ def download_item(item, results, index):
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = session.get(f"{item['url']}?attach", timeout=TIMEOUT, stream=True)
+            read_timeout = READ_TIMEOUT_BASE + (expected_size / (1024 * 1024)) * READ_TIMEOUT_PER_MB
+            response = session.get(f"{item['url']}?attach", timeout=(CONNECT_TIMEOUT, read_timeout), stream=True)
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}")
 
@@ -121,13 +134,10 @@ def download_item(item, results, index):
                     f.write(chunk)
                     downloaded += len(chunk)
 
-            is_video = content_type != 'IMAGE'
+            # 0바이트 체크 (메타데이터 size는 서버 변환으로 실제와 다를 수 있어 신뢰하지 않음)
             if downloaded == 0:
                 os.remove(filepath)
                 raise Exception("빈 파일 (0 bytes)")
-            if not is_video and downloaded != expected_size:
-                os.remove(filepath)
-                raise Exception(f"크기 불일치 (expected={expected_size}, actual={downloaded})")
 
             results[index] = {
                 'success': True, 'id': item['id'], 'path': filepath, 'size': downloaded,
@@ -146,21 +156,24 @@ def download_item(item, results, index):
                 print(f"  FAIL {filename}: {e}")
 
 
-def save_history(success_results):
-    """성공한 다운로드를 CSV에 추가"""
+def save_history(results_list):
+    """다운로드 결과를 CSV에 추가 (성공/실패 모두)"""
     with open(HISTORY_FILE, 'a', encoding='utf-8', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        for r in success_results:
-            writer.writerow({
-                'id': r['id'],
-                'chatId': r['chatId'],
-                'date': r['date'],
-                'filename': r['filename'],
-                'size': r['size'],
-                'contentType': r['contentType'],
-                'downloadedAt': now,
-            })
+        for r in results_list:
+            if r['success']:
+                writer.writerow({
+                    'id': r['id'], 'chatId': r['chatId'], 'date': r['date'],
+                    'filename': r['filename'], 'size': r['size'], 'contentType': r['contentType'],
+                    'status': 'OK', 'downloadedAt': now,
+                })
+            else:
+                writer.writerow({
+                    'id': r['id'], 'chatId': '', 'date': '', 'filename': '',
+                    'size': 0, 'contentType': '', 'status': f"FAIL: {r['error']}",
+                    'downloadedAt': now,
+                })
             downloaded_ids.add(r['id'])
 
 
@@ -170,7 +183,7 @@ total_downloaded = 0
 total_skipped = 0
 total_failed = 0
 total_bytes = 0
-cursor = None
+cursor = saved_cursor
 seq_lock = threading.Lock()
 seq_counters = {}
 
@@ -179,6 +192,12 @@ while True:
 
     if total_bytes >= MAX_SIZE_BYTES:
         print(f"\n용량 제한 도달 ({total_bytes / (1024**3):.2f} GB). 중단합니다.")
+        print(f"다음 실행 시 커서 {cursor}에서 재개됩니다.")
+        break
+
+    if MAX_COUNT and total_downloaded >= MAX_COUNT:
+        print(f"\n개수 제한 도달 ({total_downloaded}개). 중단합니다.")
+        print(f"다음 실행 시 커서 {cursor}에서 재개됩니다.")
         break
 
     try:
@@ -192,12 +211,16 @@ while True:
     has_more = file_list.get('hasMore', False)
 
     if total_count == 0 or len(items) == 0:
+        if os.path.exists(CURSOR_FILE):
+            os.remove(CURSOR_FILE)
         print("\n모든 사진 처리 완료!")
         break
 
-    # 다음 배치를 위한 cursor 설정
+    # 다음 배치를 위한 cursor 설정 + 저장
     if has_more and items:
         cursor = items[-1]['id']
+        with open(CURSOR_FILE, 'w', encoding='utf-8') as f:
+            f.write(cursor)
 
     # 이미 다운로드된 항목 분리
     new_items = [item for item in items if item['id'] not in downloaded_ids]
@@ -230,8 +253,8 @@ while True:
         total_downloaded += len(success)
         total_failed += len(failed)
 
-        # CSV에 이력 기록
-        save_history(success)
+        # CSV에 이력 기록 (성공 + 실패 모두)
+        save_history([r for r in results if r])
 
         print(f"\n  다운로드: 성공 {len(success)}개 ({batch_bytes / (1024**2):.1f} MB) / 실패 {len(failed)}개")
 
@@ -243,6 +266,9 @@ while True:
         print("  이번 배치 전부 기다운로드")
 
     if not has_more:
+        # 모든 파일 처리 완료 → 커서 파일 삭제 (다음 실행 시 처음부터)
+        if os.path.exists(CURSOR_FILE):
+            os.remove(CURSOR_FILE)
         print("\n모든 사진 처리 완료!")
         break
 

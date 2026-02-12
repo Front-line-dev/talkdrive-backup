@@ -16,9 +16,11 @@ FETCH_COUNT = 100
 THREADS_COUNT = 5
 MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5GB
 MAX_RETRIES = 3
-TIMEOUT = (10, 60)  # (연결 타임아웃, 읽기 타임아웃) 초
+CONNECT_TIMEOUT = 3  # 연결 타임아웃 (초)
+READ_TIMEOUT_BASE = 3  # 읽기 타임아웃 기본값 (초)
+READ_TIMEOUT_PER_MB = 2  # MB당 추가 타임아웃 (초)
 
-CSV_FIELDS = ['id', 'chatId', 'date', 'filename', 'size', 'contentType', 'downloadedAt']
+CSV_FIELDS = ['id', 'chatId', 'date', 'filename', 'size', 'contentType', 'status', 'downloadedAt']
 
 REQ_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
@@ -84,7 +86,7 @@ def get_next_seq(folder, date_str):
 
 def request_list():
     url = f'https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount={FETCH_COUNT}&joined=true&direction=ASC'
-    response = session.get(url, timeout=TIMEOUT)
+    response = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT_BASE))
     response.raise_for_status()
     return response.json()
 
@@ -113,7 +115,8 @@ def download_item(item, results, index):
     # 재시도 루프
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = session.get(f"{item['url']}?attach", timeout=TIMEOUT, stream=True)
+            read_timeout = READ_TIMEOUT_BASE + (expected_size / (1024 * 1024)) * READ_TIMEOUT_PER_MB
+            response = session.get(f"{item['url']}?attach", timeout=(CONNECT_TIMEOUT, read_timeout), stream=True)
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}")
 
@@ -124,14 +127,10 @@ def download_item(item, results, index):
                     f.write(chunk)
                     downloaded += len(chunk)
 
-            # 크기 검증 (동영상은 메타데이터 size와 실제 다운로드 크기가 달라 0바이트 체크만)
-            is_video = content_type != 'IMAGE'
+            # 0바이트 체크 (메타데이터 size는 서버 변환으로 실제와 다를 수 있어 신뢰하지 않음)
             if downloaded == 0:
                 os.remove(filepath)
                 raise Exception("빈 파일 (0 bytes)")
-            if not is_video and downloaded != expected_size:
-                os.remove(filepath)
-                raise Exception(f"크기 불일치 (expected={expected_size}, actual={downloaded})")
 
             results[index] = {
                 'success': True, 'id': item['id'], 'path': filepath, 'size': downloaded,
@@ -151,21 +150,24 @@ def download_item(item, results, index):
                 print(f"  FAIL {filename}: {e}")
 
 
-def save_history(success_results):
-    """성공한 다운로드를 CSV에 추가"""
+def save_history(results_list):
+    """다운로드 결과를 CSV에 추가 (성공/실패 모두)"""
     with open(HISTORY_FILE, 'a', encoding='utf-8', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        for r in success_results:
-            writer.writerow({
-                'id': r['id'],
-                'chatId': r['chatId'],
-                'date': r['date'],
-                'filename': r['filename'],
-                'size': r['size'],
-                'contentType': r['contentType'],
-                'downloadedAt': now,
-            })
+        for r in results_list:
+            if r['success']:
+                writer.writerow({
+                    'id': r['id'], 'chatId': r['chatId'], 'date': r['date'],
+                    'filename': r['filename'], 'size': r['size'], 'contentType': r['contentType'],
+                    'status': 'OK', 'downloadedAt': now,
+                })
+            else:
+                writer.writerow({
+                    'id': r['id'], 'chatId': '', 'date': '', 'filename': '',
+                    'size': 0, 'contentType': '', 'status': f"FAIL: {r['error']}",
+                    'downloadedAt': now,
+                })
             downloaded_ids.add(r['id'])
 
 
@@ -175,7 +177,7 @@ def request_delete(ids):
         'https://drawer-api.kakao.com/mediaFile/delete',
         data=json.dumps(data),
         headers={'Content-Type': 'application/json'},
-        timeout=TIMEOUT,
+        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT_BASE),
     )
     return response.status_code == 204
 
@@ -244,8 +246,8 @@ while True:
         total_downloaded += len(success)
         total_failed += len(failed)
 
-        # CSV에 이력 기록
-        save_history(success)
+        # CSV에 이력 기록 (성공 + 실패 모두)
+        save_history([r for r in results if r])
 
         print(f"\n  다운로드: 성공 {len(success)}개 ({batch_bytes / (1024**2):.1f} MB) / 실패 {len(failed)}개")
 

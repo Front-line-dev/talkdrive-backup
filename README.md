@@ -8,3 +8,6 @@
 - main.py 실행
 
 ![쿠키 내보내기](./cookie.PNG)
+
+## 다른 분들이 기능을 추가한 버전들
+- [southglory](https://github.com/Front-line-dev/talkdrive-backup/tree/southglory)

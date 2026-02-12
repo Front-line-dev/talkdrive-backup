@@ -1,6 +1,10 @@
 import os
 import re
+import sys
 import csv
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 import requests
 import json
 import threading
@@ -9,10 +13,28 @@ from collections import defaultdict
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+VALID_TYPES = ['MEDIA', 'FILE', 'LINK']
+VERTICAL_TYPE = sys.argv[1].upper() if len(sys.argv) > 1 else 'MEDIA'
+if VERTICAL_TYPE not in VALID_TYPES:
+    print(f"잘못된 타입: {VERTICAL_TYPE}. 사용 가능: {', '.join(VALID_TYPES)}")
+    sys.exit(1)
+print(f"타입: {VERTICAL_TYPE}")
+
 BACKUP_PATH = './backups'
 COOKIE_FILE = 'talkcloud.kakao.com_cookies.txt'
 HISTORY_FILE = os.path.join(BACKUP_PATH, 'download_history.csv')
-CURSOR_FILE = os.path.join(BACKUP_PATH, 'download_cursor.txt')
+
+# 커서 파일: 타입별 분리 (기존 download_cursor.txt → download_cursor_MEDIA.txt 마이그레이션)
+def _get_cursor_file():
+    if VERTICAL_TYPE == 'MEDIA':
+        old_path = os.path.join(BACKUP_PATH, 'download_cursor.txt')
+        new_path = os.path.join(BACKUP_PATH, 'download_cursor_MEDIA.txt')
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            os.rename(old_path, new_path)
+        return new_path
+    return os.path.join(BACKUP_PATH, f'download_cursor_{VERTICAL_TYPE}.txt')
+
+CURSOR_FILE = _get_cursor_file()
 FETCH_COUNT = 100
 THREADS_COUNT = 5
 MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5GB
@@ -93,8 +115,40 @@ def get_next_seq(folder, date_str):
     return max_seq + 1
 
 
+def get_output_folder(chat_id):
+    if VERTICAL_TYPE == 'MEDIA':
+        return os.path.join(BACKUP_PATH, f"chat_{chat_id}")
+    elif VERTICAL_TYPE == 'FILE':
+        return os.path.join(BACKUP_PATH, 'files', f"chat_{chat_id}")
+    elif VERTICAL_TYPE == 'LINK':
+        return os.path.join(BACKUP_PATH, 'links', f"chat_{chat_id}")
+
+
+def sanitize_filename(name):
+    name = re.sub(r'[\\/*?:"<>|]', '_', name)
+    name = name.strip(' .')
+    if len(name) > 240:
+        base, ext = os.path.splitext(name)
+        name = base[:240 - len(ext)] + ext
+    return name or 'unnamed'
+
+
+def get_unique_filepath(folder, filename):
+    filepath = os.path.join(folder, filename)
+    if not os.path.exists(filepath):
+        return filepath, filename
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    while True:
+        new_name = f"{base} ({counter}){ext}"
+        new_path = os.path.join(folder, new_name)
+        if not os.path.exists(new_path):
+            return new_path, new_name
+        counter += 1
+
+
 def request_list(cursor=None):
-    url = f'https://drawer-api.kakao.com/mediaFile/list?verticalType=MEDIA&fetchCount={FETCH_COUNT}&joined=true&direction=ASC'
+    url = f'https://drawer-api.kakao.com/mediaFile/list?verticalType={VERTICAL_TYPE}&fetchCount={FETCH_COUNT}&joined=true&direction=ASC'
     if cursor:
         url += f'&cursor={cursor}'
     response = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT_BASE))
@@ -110,16 +164,20 @@ def download_item(item, results, index):
     expected_size = int(item['size'])
     content_type = item.get('contentType', '')
 
-    folder = os.path.join(BACKUP_PATH, f"chat_{chat_id}")
+    folder = get_output_folder(chat_id)
     os.makedirs(folder, exist_ok=True)
 
-    with seq_lock:
-        key = (chat_id, date_str)
-        seq = seq_counters.get(key, get_next_seq(folder, date_str))
-        seq_counters[key] = seq + 1
-
-    filename = f"{date_str}_{seq:03d}.{ext}"
-    filepath = os.path.join(folder, filename)
+    if VERTICAL_TYPE == 'FILE' and item.get('originalFileName'):
+        with seq_lock:
+            raw_name = sanitize_filename(item['originalFileName'])
+            filepath, filename = get_unique_filepath(folder, raw_name)
+    else:
+        with seq_lock:
+            key = (chat_id, date_str)
+            seq = seq_counters.get(key, get_next_seq(folder, date_str))
+            seq_counters[key] = seq + 1
+        filename = f"{date_str}_{seq:03d}.{ext}"
+        filepath = os.path.join(folder, filename)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -213,7 +271,7 @@ while True:
     if total_count == 0 or len(items) == 0:
         if os.path.exists(CURSOR_FILE):
             os.remove(CURSOR_FILE)
-        print("\n모든 사진 처리 완료!")
+        print(f"\n모든 {VERTICAL_TYPE} 처리 완료!")
         break
 
     # 다음 배치를 위한 cursor 설정 + 저장
@@ -227,7 +285,7 @@ while True:
     skip_count = len(items) - len(new_items)
     total_skipped += skip_count
 
-    print(f"\n===== 배치 {batch} | 전체: {total_count}개 | 신규: {len(new_items)}개 | 기다운로드: {skip_count}개 | 누적: {total_bytes / (1024**3):.2f} GB =====")
+    print(f"\n===== 배치 {batch} | 전체 {VERTICAL_TYPE}: {total_count}개 | 신규: {len(new_items)}개 | 기다운로드: {skip_count}개 | 누적: {total_bytes / (1024**3):.2f} GB =====")
 
     if new_items:
         results = [None] * len(new_items)
@@ -269,7 +327,7 @@ while True:
         # 모든 파일 처리 완료 → 커서 파일 삭제 (다음 실행 시 처음부터)
         if os.path.exists(CURSOR_FILE):
             os.remove(CURSOR_FILE)
-        print("\n모든 사진 처리 완료!")
+        print(f"\n모든 {VERTICAL_TYPE} 처리 완료!")
         break
 
 print(f"\n===== 최종 결과 =====")

@@ -46,7 +46,7 @@ if os.path.exists(HISTORY_FILE):
     with open(HISTORY_FILE, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            downloaded_ids.add(row['id'])
+            downloaded_ids.add(str(row['id']))
 else:
     with open(HISTORY_FILE, 'w', encoding='utf-8', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -214,7 +214,7 @@ def save_history(results_list):
                     'size': 0, 'contentType': '', 'status': f"FAIL: {r['error']}",
                     'downloadedAt': now,
                 })
-            downloaded_ids.add(r['id'])
+            downloaded_ids.add(str(r['id']))
 
 
 def request_delete(ids):
@@ -254,15 +254,15 @@ while True:
         break
 
     total_count = file_list.get('totalCount', 0)
-    items = file_list.get('items', [])
+    items = file_list.get('mediaFiles') or file_list.get('items', [])
 
     if total_count == 0 or len(items) == 0:
         print(f"\n모든 {VERTICAL_TYPE} 처리 완료!")
         break
 
     # 이미 다운로드된 항목과 새 항목 분리
-    new_items = [item for item in items if item['id'] not in downloaded_ids]
-    skip_items = [item for item in items if item['id'] in downloaded_ids]
+    new_items = [item for item in items if str(item['id']) not in downloaded_ids]
+    skip_items = [item for item in items if str(item['id']) in downloaded_ids]
 
     print(f"\n===== 배치 {batch} | 남은 {VERTICAL_TYPE}: {total_count}개 | 신규: {len(new_items)}개 | 기다운로드: {len(skip_items)}개 | 누적: {total_bytes / (1024**3):.2f} GB =====")
 

@@ -24,7 +24,7 @@ BACKUP_PATH = './backups'
 COOKIE_FILE = 'talkcloud.kakao.com_cookies.txt'
 HISTORY_FILE = os.path.join(BACKUP_PATH, 'download_history.csv')
 
-# 커서 파일: 타입별 분리 (기존 download_cursor.txt → download_cursor_MEDIA.txt 마이그레이션)
+# offset 파일: 타입별 분리, 마지막 drawerId 저장 (재실행 시 이어서 진행)
 def _get_cursor_file():
     if VERTICAL_TYPE == 'MEDIA':
         old_path = os.path.join(BACKUP_PATH, 'download_cursor.txt')
@@ -59,7 +59,7 @@ if os.path.exists(HISTORY_FILE):
     with open(HISTORY_FILE, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            downloaded_ids.add(row['id'])
+            downloaded_ids.add(str(row['id']))
 else:
     with open(HISTORY_FILE, 'w', encoding='utf-8', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -72,7 +72,7 @@ if os.path.exists(CURSOR_FILE):
     with open(CURSOR_FILE, 'r', encoding='utf-8') as f:
         saved_cursor = f.read().strip() or None
     if saved_cursor:
-        print(f"이전 커서에서 재개: {saved_cursor}")
+        print(f"이전 위치에서 재개: offset={saved_cursor}")
 
 # 쿠키 읽기
 cookies = {}
@@ -147,10 +147,10 @@ def get_unique_filepath(folder, filename):
         counter += 1
 
 
-def request_list(cursor=None):
+def request_list(offset=None):
     url = f'https://drawer-api.kakao.com/mediaFile/list?verticalType={VERTICAL_TYPE}&fetchCount={FETCH_COUNT}&joined=true&direction=ASC'
-    if cursor:
-        url += f'&cursor={cursor}'
+    if offset:
+        url += f'&offset={offset}'
     response = session.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT_BASE))
     response.raise_for_status()
     return response.json()
@@ -232,7 +232,7 @@ def save_history(results_list):
                     'size': 0, 'contentType': '', 'status': f"FAIL: {r['error']}",
                     'downloadedAt': now,
                 })
-            downloaded_ids.add(r['id'])
+            downloaded_ids.add(str(r['id']))
 
 
 # 메인 루프
@@ -241,31 +241,32 @@ total_downloaded = 0
 total_skipped = 0
 total_failed = 0
 total_bytes = 0
-cursor = saved_cursor
+offset = saved_cursor  # drawerId 기반 offset (이전 실행 위치)
 seq_lock = threading.Lock()
 seq_counters = {}
+seen_ids_this_run = set()  # 현재 실행에서 본 ID (무한 루프 감지용)
 
 while True:
     batch += 1
 
     if total_bytes >= MAX_SIZE_BYTES:
         print(f"\n용량 제한 도달 ({total_bytes / (1024**3):.2f} GB). 중단합니다.")
-        print(f"다음 실행 시 커서 {cursor}에서 재개됩니다.")
+        print(f"다음 실행 시 offset {offset}에서 재개됩니다.")
         break
 
     if MAX_COUNT and total_downloaded >= MAX_COUNT:
         print(f"\n개수 제한 도달 ({total_downloaded}개). 중단합니다.")
-        print(f"다음 실행 시 커서 {cursor}에서 재개됩니다.")
+        print(f"다음 실행 시 offset {offset}에서 재개됩니다.")
         break
 
     try:
-        file_list = request_list(cursor)
+        file_list = request_list(offset)
     except Exception as e:
         print(f"\n목록 요청 실패: {e}")
         break
 
     total_count = file_list.get('totalCount', 0)
-    items = file_list.get('items', [])
+    items = file_list.get('mediaFiles') or file_list.get('items', [])
     has_more = file_list.get('hasMore', False)
 
     if total_count == 0 or len(items) == 0:
@@ -274,14 +275,23 @@ while True:
         print(f"\n모든 {VERTICAL_TYPE} 처리 완료!")
         break
 
-    # 다음 배치를 위한 cursor 설정 + 저장
+    # 다음 배치를 위한 offset 설정 (마지막 항목의 drawerId 사용)
     if has_more and items:
-        cursor = items[-1]['id']
+        offset = str(items[-1]['drawerId'])
         with open(CURSOR_FILE, 'w', encoding='utf-8') as f:
-            f.write(cursor)
+            f.write(offset)
+
+    # 무한 루프 감지: 이번 배치의 모든 항목을 이미 이번 실행에서 본 경우
+    batch_ids = {str(item['id']) for item in items}
+    if batch_ids.issubset(seen_ids_this_run):
+        print(f"\n이미 확인한 항목이 다시 나타났습니다. 모든 {VERTICAL_TYPE} 확인 완료!")
+        if os.path.exists(CURSOR_FILE):
+            os.remove(CURSOR_FILE)
+        break
+    seen_ids_this_run.update(batch_ids)
 
     # 이미 다운로드된 항목 분리
-    new_items = [item for item in items if item['id'] not in downloaded_ids]
+    new_items = [item for item in items if str(item['id']) not in downloaded_ids]
     skip_count = len(items) - len(new_items)
     total_skipped += skip_count
 

@@ -320,6 +320,7 @@ while True:
 
 print(f"\n===== 최종 결과 =====")
 print(f"다운로드 성공: {total_downloaded}개 ({total_bytes / (1024**3):.2f} GB)")
-print(f"기다운로드 (다운로드 생략): {total_skipped}개")
+if total_skipped > 0:
+    print(f"이전 실행에서 처리됨: {total_skipped}개 (다운로드 생략, 서버 삭제만 진행)")
 print(f"서버 삭제: {total_deleted}개")
 print(f"실패: {total_failed}개")

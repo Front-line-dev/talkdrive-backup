@@ -241,10 +241,11 @@ total_downloaded = 0
 total_skipped = 0
 total_failed = 0
 total_bytes = 0
+last_total_count = 0  # API가 보고한 전체 수 (접근 불가 포함)
 offset = saved_cursor  # drawerId 기반 offset (이전 실행 위치)
 seq_lock = threading.Lock()
 seq_counters = {}
-seen_ids_this_run = set()  # 현재 실행에서 본 ID (무한 루프 감지용)
+seen_ids_this_run = set()  # 현재 실행에서 본 ID (순환 감지용)
 
 while True:
     batch += 1
@@ -266,6 +267,7 @@ while True:
         break
 
     total_count = file_list.get('totalCount', 0)
+    last_total_count = total_count
     items = file_list.get('mediaFiles') or file_list.get('items', [])
     has_more = file_list.get('hasMore', False)
 
@@ -281,14 +283,9 @@ while True:
         with open(CURSOR_FILE, 'w', encoding='utf-8') as f:
             f.write(offset)
 
-    # 무한 루프 감지: 이번 배치의 모든 항목을 이미 이번 실행에서 본 경우
-    batch_ids = {str(item['id']) for item in items}
-    if batch_ids.issubset(seen_ids_this_run):
-        print(f"\n이미 확인한 항목이 다시 나타났습니다. 모든 {VERTICAL_TYPE} 확인 완료!")
-        if os.path.exists(CURSOR_FILE):
-            os.remove(CURSOR_FILE)
-        break
-    seen_ids_this_run.update(batch_ids)
+    # 순환 감지: 확인한 고유 ID 수로 전체 확인 여부 판단
+    seen_ids_this_run.update(str(item['id']) for item in items)
+    all_checked = len(seen_ids_this_run) >= total_count
 
     # 이미 다운로드된 항목 분리
     new_items = [item for item in items if str(item['id']) not in downloaded_ids]
@@ -333,15 +330,23 @@ while True:
     else:
         print("  이번 배치 전부 기다운로드")
 
-    if not has_more:
+    if not has_more or all_checked:
         # 모든 파일 처리 완료 → 커서 파일 삭제 (다음 실행 시 처음부터)
         if os.path.exists(CURSOR_FILE):
             os.remove(CURSOR_FILE)
-        print(f"\n모든 {VERTICAL_TYPE} 처리 완료!")
+        print(f"\n모든 {VERTICAL_TYPE} 처리 완료! (확인: {len(seen_ids_this_run)}/{total_count}개)")
         break
 
+accessible = len(seen_ids_this_run)
+inaccessible = max(0, last_total_count - accessible)
+
 print(f"\n===== 최종 결과 =====")
+print(f"전체 {VERTICAL_TYPE}: {last_total_count}개 (API 기준)")
+print(f"  조회 가능: {accessible}개")
+if inaccessible > 0:
+    print(f"  접근 불가: {inaccessible}개 (퇴장한 채팅방 등)")
 print(f"다운로드 성공: {total_downloaded}개 ({total_bytes / (1024**3):.2f} GB)")
-print(f"기다운로드 (다운로드 생략): {total_skipped}개")
+if total_skipped > 0:
+    print(f"이전 실행에서 처리됨: {total_skipped}개 (다운로드 생략)")
 print(f"실패: {total_failed}개")
 print("(서버에서 삭제하지 않았습니다)")

@@ -266,7 +266,7 @@ while True:
         print(f"\n목록 요청 실패: {e}")
         break
 
-    total_count = file_list.get('totalCount', 0)
+    total_count = int(file_list.get('totalCount', 0))
     last_total_count = total_count
     items = file_list.get('mediaFiles') or file_list.get('items', [])
     has_more = file_list.get('hasMore', False)

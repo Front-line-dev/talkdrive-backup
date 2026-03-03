@@ -14,11 +14,32 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 VALID_TYPES = ['MEDIA', 'FILE', 'LINK']
-VERTICAL_TYPE = sys.argv[1].upper() if len(sys.argv) > 1 else 'MEDIA'
+
+# 인자 파싱: 위치 인자(타입)와 플래그 인자(-key:value) 분리
+_positional = [a for a in sys.argv[1:] if not a.startswith('-')]
+_flags     = [a for a in sys.argv[1:] if     a.startswith('-')]
+
+VERTICAL_TYPE = _positional[0].upper() if _positional else 'MEDIA'
 if VERTICAL_TYPE not in VALID_TYPES:
     print(f"잘못된 타입: {VERTICAL_TYPE}. 사용 가능: {', '.join(VALID_TYPES)}")
     sys.exit(1)
 print(f"타입: {VERTICAL_TYPE}")
+
+del _positional, _flags  # 임시 파싱 변수 정리
+
+# 날짜 제한 파싱 (-limit:yyyy-mm-dd, 옵션이 없으면 제한 없음)
+DATE_LIMIT: datetime | None = None
+DATE_LIMIT_STR: str | None = None
+_limit_flag = next((a for a in sys.argv[1:] if a.startswith('-limit:')), None)
+if _limit_flag:
+    DATE_LIMIT_STR = _limit_flag[len('-limit:'):]
+    try:
+        DATE_LIMIT = datetime.strptime(DATE_LIMIT_STR, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        print(f"날짜 제한: {DATE_LIMIT_STR} 까지")
+    except ValueError:
+        print(f"잘못된 날짜 형식: '{DATE_LIMIT_STR}'. 올바른 형식: -limit:yyyy-mm-dd")
+        sys.exit(1)
+del _limit_flag  # 임시 파싱 변수 정리
 
 BACKUP_PATH = './backups'
 COOKIE_FILE = 'talkcloud.kakao.com_cookies.txt'
@@ -283,6 +304,14 @@ while True:
         with open(CURSOR_FILE, 'w', encoding='utf-8') as f:
             f.write(offset)
 
+    # 날짜 제한 필터링 (ASC 순서이므로 초과 항목 발견 시 이후 배치 불필요)
+    if DATE_LIMIT:
+        items_within = [item for item in items if datetime.fromtimestamp(int(item['createdAt']) / 1000) <= DATE_LIMIT]
+        over_limit_count = len(items) - len(items_within)
+        items = items_within
+    else:
+        over_limit_count = 0
+
     # 순환 감지: 확인한 고유 ID 수로 전체 확인 여부 판단
     seen_ids_this_run.update(str(item['id']) for item in items)
     all_checked = len(seen_ids_this_run) >= total_count
@@ -329,6 +358,12 @@ while True:
                 print(f"    - {f['id']}: {f['error']}")
     else:
         print("  이번 배치 전부 기다운로드")
+
+    if over_limit_count > 0:
+        print(f"  날짜 제한 ({DATE_LIMIT_STR}) 초과 항목 {over_limit_count}개 건너뜀. 처리 완료.")
+        if os.path.exists(CURSOR_FILE):
+            os.remove(CURSOR_FILE)
+        break
 
     if not has_more or all_checked:
         # 모든 파일 처리 완료 → 커서 파일 삭제 (다음 실행 시 처음부터)

@@ -9,16 +9,20 @@
 | `backup.py` | 다운로드 후 서버에서 삭제 (백업 + 정리) |
 | `download_only.py` | 다운로드만 수행, 서버 삭제 없음 |
 
-두 스크립트 모두 타입 인자를 지원합니다:
+두 스크립트 모두 타입 인자와 플래그 인자를 지원합니다. 위치 인자(타입)와 플래그(`-key:value`) 인자는 **순서에 무관하게** 사용할 수 있습니다:
 
 ```bash
-python backup.py              # MEDIA (사진/동영상, 기본값)
-python backup.py FILE         # FILE (문서/파일)
-python backup.py LINK         # LINK (텍스트/링크)
+python backup.py                             # MEDIA (사진/동영상, 기본값)
+python backup.py FILE                        # FILE (문서/파일)
+python backup.py LINK                        # LINK (텍스트/링크)
+python backup.py -limit:2024-12-31           # MEDIA, 2024-12-31까지만
+python backup.py FILE -limit:2024-12-31      # FILE, 날짜 제한
+python backup.py -limit:2024-12-31 FILE      # 순서 무관
 
-python download_only.py       # MEDIA (기본값)
-python download_only.py FILE  # FILE
-python download_only.py LINK  # LINK
+python download_only.py                      # MEDIA (기본값)
+python download_only.py FILE                 # FILE
+python download_only.py LINK                 # LINK
+python download_only.py -limit:2024-12-31    # MEDIA, 날짜 제한
 ```
 
 ### 지원 타입
@@ -29,12 +33,18 @@ python download_only.py LINK  # LINK
 | `FILE` | FILE | 문서, 파일 (pdf, xlsx 등) | 원본 파일명 사용 |
 | `LINK` | LINK | 텍스트, 링크 (.txt) | `YYYYMMDD_NNN.txt` |
 
+### 지원 플래그
+| 타입 | 내용 | 작성 규칙 |
+|------|-----------------|------------|
+|limit | 날짜 상한 제한 | yyyy-mm-dd|
+
 ### backup.py
 
 - 오래된 파일부터 100개씩 가져와 다운로드
 - 다운로드 성공한 파일만 서버에서 삭제
 - 삭제된 파일은 다음 배치에서 자동으로 건너뛰므로 cursor 없이 항상 첫 페이지를 요청
 - 실행할 때마다 설정된 용량(기본 5GB)까지 처리 후 중단
+- `-limit:yyyy-mm-dd` 플래그로 특정 날짜까지의 파일만 처리하고 자동 종료
 
 ### download_only.py
 
@@ -43,6 +53,7 @@ python download_only.py LINK  # LINK
 - 서버 데이터를 보존하면서 로컬 백업만 만들고 싶을 때 사용
 - 실행할 때마다 설정된 용량(기본 5GB)까지 처리 후 중단
 - 모든 파일 처리 완료 시 offset 파일이 삭제되어 다음 실행 시 처음부터 시작
+- `-limit:yyyy-mm-dd` 플래그로 특정 날짜까지의 파일만 처리하고 자동 종료
 
 ### 다운로드 이력 (download_history.csv)
 
@@ -93,11 +104,25 @@ python backup.py FILE
 # 텍스트/링크 백업 + 서버 삭제
 python backup.py LINK
 
+# 날짜 제한: 2024-12-31까지의 파일만 백업 + 서버 삭제
+python backup.py -limit:2024-12-31
+python backup.py FILE -limit:2024-12-31
+python backup.py LINK -limit:2024-12-31
+
 # 다운로드만 (서버 삭제 없음)
 python download_only.py
 python download_only.py FILE
 python download_only.py LINK
+
+# 날짜 제한: 2024-12-31까지의 파일만 다운로드
+python download_only.py -limit:2024-12-31
+python download_only.py FILE -limit:2024-12-31
+python download_only.py LINK -limit:2024-12-31
+
 ```
+
+> **플래그 인자 순서**: 타입(`MEDIA`/`FILE`/`LINK`)과 `-limit` 플래그는 순서에 무관하게 사용할 수 있습니다.
+> 예: `python backup.py FILE -limit:2024-12-31` ↔ `python backup.py -limit:2024-12-31 FILE`
 
 ## 설정
 
@@ -175,7 +200,15 @@ python download_only.py FILE  # 1단계: 다운로드만
 python backup.py FILE         # 2단계: 이미 받은 파일은 다운로드 생략, 서버에서 삭제만 진행
 ```
 
-### 4. 용량 제한을 바꿔서 실행
+### 4. 특정 날짜까지만 백업 (날짜 제한)
+```bash
+# 2024년 이전 파일만 다운로드
+python backup.py -limit:2023-12-31
+python download_only.py FILE -limit:2023-12-31
+```
+지정한 날짜를 초과하는 항목이 처음 발견되면 해당 배치부터 중단됩니다. (API가 오래된 순서(ASC)로 반환하므로 이후 데이터는 모두 제한 날짜를 초과함)
+
+### 5. 용량 제한을 바꿔서 실행
 ```python
 # backup.py 또는 download_only.py 상단 수정
 MAX_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10GB로 변경
@@ -193,6 +226,7 @@ MAX_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10GB로 변경
 - **다운로드 이력**: `download_history.csv`에 성공/실패 모두 기록하여 중복 시도를 방지합니다. 계속 실패하는 파일도 이력에 기록되어 다음 실행 시 스킵됩니다. `backup.py`에서는 이미 다운로드된 파일은 다운로드를 생략하고 서버 삭제만 진행합니다.
 - **위치 재개** (download_only.py): 타입별로 마지막 항목의 `drawerId`를 offset 파일에 저장합니다. 중단 후 재실행 시 처음부터 다시 스캔하지 않고 이어서 진행합니다.
 - **순환 감지** (download_only.py): 확인한 고유 항목 수가 전체 수에 도달하면 자동 종료합니다. API가 목록 끝에서 처음으로 순환하더라도 불필요한 반복을 방지합니다.
+- **날짜 제한** (`-limit:yyyy-mm-dd`): 지정한 날짜(`23:59:59` 기준)를 초과하는 항목이 발견되면 해당 항목을 건너뛰고 즉시 처리를 종료합니다. API가 오래된 순서(ASC)로 반환하므로 이후 데이터 역시 모두 제한을 초과함이 보장됩니다.
 - **동적 타임아웃**: 파일 크기에 비례하여 읽기 타임아웃을 자동 조절합니다 (기본 3초 + MB당 2초). 작은 파일은 빠르게 실패 판정하고, 대용량 파일은 충분한 시간을 줍니다.
 - **파일명 충돌 방지** (FILE 타입): 원본 파일명이 같은 파일이 여러 개일 경우 자동으로 `(1)`, `(2)` 등을 붙여 구분합니다.
 

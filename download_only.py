@@ -305,12 +305,11 @@ while True:
             f.write(offset)
 
     # 날짜 제한 필터링 (ASC 순서이므로 초과 항목 발견 시 이후 배치 불필요)
+    over_limit_count = 0
     if DATE_LIMIT:
         items_within = [item for item in items if datetime.fromtimestamp(int(item['createdAt']) / 1000) <= DATE_LIMIT]
         over_limit_count = len(items) - len(items_within)
         items = items_within
-    else:
-        over_limit_count = 0
 
     # 순환 감지: 확인한 고유 ID 수로 전체 확인 여부 판단
     seen_ids_this_run.update(str(item['id']) for item in items)

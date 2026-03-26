@@ -282,12 +282,11 @@ while True:
         break
 
     # 날짜 제한 필터링 (ASC 순서이므로 초과 항목 발견 시 이후 배치는 불필요)
+    over_limit_count = 0
     if DATE_LIMIT:
         items_within = [item for item in items if datetime.fromtimestamp(int(item['createdAt']) / 1000) <= DATE_LIMIT]
         over_limit_count = len(items) - len(items_within)
         items = items_within
-    else:
-        over_limit_count = 0
 
     # 이미 다운로드된 항목과 새 항목 분리
     new_items = [item for item in items if str(item['id']) not in downloaded_ids]

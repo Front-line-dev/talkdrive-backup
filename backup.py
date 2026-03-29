@@ -14,11 +14,32 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 VALID_TYPES = ['MEDIA', 'FILE', 'LINK']
-VERTICAL_TYPE = sys.argv[1].upper() if len(sys.argv) > 1 else 'MEDIA'
+
+# 인자 파싱: 위치 인자(타입)와 플래그 인자(-key:value) 분리
+_positional = [a for a in sys.argv[1:] if not a.startswith('-')]
+_flags     = [a for a in sys.argv[1:] if     a.startswith('-')]
+
+VERTICAL_TYPE = _positional[0].upper() if _positional else 'MEDIA'
 if VERTICAL_TYPE not in VALID_TYPES:
     print(f"잘못된 타입: {VERTICAL_TYPE}. 사용 가능: {', '.join(VALID_TYPES)}")
     sys.exit(1)
 print(f"타입: {VERTICAL_TYPE}")
+
+del _positional, _flags  # 임시 파싱 변수 정리
+
+# 날짜 제한 파싱 (-limit:yyyy-mm-dd, 옵션이 없으면 제한 없음)
+DATE_LIMIT: datetime | None = None
+DATE_LIMIT_STR: str | None = None 
+_limit_flag = next((a for a in sys.argv[1:] if a.startswith('-limit:')), None)
+if _limit_flag:
+    DATE_LIMIT_STR = _limit_flag[len('-limit:'):]
+    try:
+        DATE_LIMIT = datetime.strptime(DATE_LIMIT_STR, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        print(f"날짜 제한: {DATE_LIMIT_STR} 까지")
+    except ValueError:
+        print(f"잘못된 날짜 형식: '{DATE_LIMIT_STR}'. 올바른 형식: -limit:yyyy-mm-dd")
+        sys.exit(1)
+del _limit_flag  # 임시 파싱 변수 정리
 
 BACKUP_PATH = './backups'
 COOKIE_FILE = 'talkcloud.kakao.com_cookies.txt'
@@ -260,6 +281,13 @@ while True:
         print(f"\n모든 {VERTICAL_TYPE} 처리 완료!")
         break
 
+    # 날짜 제한 필터링 (ASC 순서이므로 초과 항목 발견 시 이후 배치는 불필요)
+    over_limit_count = 0
+    if DATE_LIMIT:
+        items_within = [item for item in items if datetime.fromtimestamp(int(item['createdAt']) / 1000) <= DATE_LIMIT]
+        over_limit_count = len(items) - len(items_within)
+        items = items_within
+
     # 이미 다운로드된 항목과 새 항목 분리
     new_items = [item for item in items if str(item['id']) not in downloaded_ids]
     skip_items = [item for item in items if str(item['id']) in downloaded_ids]
@@ -317,6 +345,10 @@ while True:
             print(f"  서버 삭제 완료 ({len(delete_ids)}개)")
         else:
             print("  서버 삭제 실패! 다음 실행 시 재시도됩니다.")
+
+    if over_limit_count > 0:
+        print(f"  날짜 제한 ({DATE_LIMIT_STR}) 초과 항목 {over_limit_count}개 건너뜀. 처리 완료.")
+        break
 
 print(f"\n===== 최종 결과 =====")
 print(f"다운로드 성공: {total_downloaded}개 ({total_bytes / (1024**3):.2f} GB)")
